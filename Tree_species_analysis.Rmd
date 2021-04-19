@@ -1,17 +1,18 @@
 
 
-###########################################################################################################################################################################################################################################################################################################################################################################################################
+########################################################################################################################################################################################################################################################################################################################################################################################################### 
+
 # Title          : Analyse Tree species composition with time-series multispectral data  
 #
-# Purpose        : This Script is written as a final project for the Programming and Geostatistical Analysis course (Eagle master    programm, teacher Martin Wegmann)
+# Purpose        : This Script is written as a final project for the Programming and Geostatistical Analysis course (Eagle master    programm, teacher Dr. Martin Wegmann)
 #                
 # Author         : Nora Nieskens 
 #
-# Data           : Field data: Vascular plant species identity and their cover on each plot for Steigerwald and Uniforest (Source: )
-Landcover raster based on Sentinel2 from 2016 (Source: mundialis GmbH & Co. KG)
+# Field data:      Vascular plant species identity and their cover on each plot for Steigerwald (2014) and Uniforest                      (2017) (Source: )
 #                 
-# Satellite data : Sentinel 2 data: multi-temporal composite (will be generated in the script) of 10.05.2017,19.07.2017 and 23.08.2017
+# Satellite data : Sentinel 2 data: multi-temporal composite (will be generated in the script) of 10.05.2017,19.07.2017 and 23.08.2017; Landcover raster based on Sentinel2 from 2016 (Source: mundialis GmbH & Co. KG)
 # Output         : Spatial predicition of community composition (NDMS1, NDMS2)
+
 ##############################################################################################################################################################################################################################################################################################################
 
 ### Install + load packages 
@@ -626,7 +627,9 @@ rf_prediction5= raster::predict(stack(S2), model=rf_model5)
 plot(rf_prediction5) 
 
 ```
-The three parameters (NMDS1, NMDS2 and number of tree species) are predicted based on multi-temporal S2 imagery using Random forest. The results differ highly in model accuracy (NMDS1 R2= 0.84, NMDS2 R2 =0.21, n species R2 = 0.89  including NMDS1+2, n species R2 = 0.89  only S2 bands). Species richness has shown to be highly negatively correlated to NMDS1(R=-0.92), whereas there is no correlation to NMDS2 (0.07).Even though the NMDS1 is highly correlated, the model predicting species richness which is not including NMDS1/2 performs better than the one including NMDS1. 
+The three parameters (NMDS1, NMDS2 and number of tree species) are predicted based on multi-temporal S2 imagery using Random forest. The results differ highly in model accuracy (NMDS1 R2= 0.84, NMDS2 R2 =0.21, n species R2 = 0.89  including NMDS1+2, n species R2 = 0.89  only S2 bands). Species richness has shown to be highly negatively correlated to NMDS1(R=-0.92), whereas there is no correlation to NMDS2 (0.07). Even though the NMDS1 is highly correlated, the model predicting species richness which is not including NMDS1/2 seems to perform better than the one including NMDS1. 
+
+It has to be noticed, that the field data surveys where conducted in 2014 (Steigerwald) and 2017 (Uniforest). Here, S2 data from 2017 was used for both which can increase model inaccuracies. Further, the cloud masking process needs to be improved and quality checked. 
 
 
 
