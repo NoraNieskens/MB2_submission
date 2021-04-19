@@ -10,10 +10,8 @@
 # Data           : Field data: Vascular plant species identity and their cover on each plot for Steigerwald and Uniforest (Source: )
 Landcover raster based on Sentinel2 from 2016 (Source: mundialis GmbH & Co. KG)
 #                 
-# Satellite data : Sentinel 2 data 2017: multi-temporal composite (will be generated in the script)
+# Satellite data : Sentinel 2 data: multi-temporal composite (will be generated in the script) of 10.05.2017,19.07.2017 and 23.08.2017
 # Output         : Spatial predicition of community composition (NDMS1, NDMS2)
-#
-# Reference		   : 
 ##############################################################################################################################################################################################################################################################################################################
 
 ### Install + load packages 
@@ -160,8 +158,12 @@ colnames(tree_spec)
 
 
 ```{r}
+#here 2 axis are choosen 
 tree_NMDS <-  metaMDS(tree_spec[,!names(tree_spec) %in% c("ID", "X","Y","habitat")],distance = "bray", k=2)
 tree_NMDS$stress
+
+# A rule of thumb: stress < 0.05 provides an excellent representation in reduced dimensions, < 0.1 is great, <0.2 is good/ok, and stress < 0.3 provides a poor representation (Kruskal, Wish 1978). So our stress of 0.091 shows, that it is a good fit and that k=2 is sufficient. 
+
 stressplot(tree_NMDS)
 
 #add NDMS1, NDMS2 info to dataframe
@@ -402,6 +404,10 @@ plotRGB(S2_cloudmask_2017130, stretch="lin")
 #stack the masked images together 
 S2_cloudmasked <- stack(S2_cloudmask_2017235,S2_cloudmask_2017200,S2_cloudmask_2017130)
 
+##Sentinel level 2A products provide BOA reflectance multiplied by 10000
+## Convert to refelectance values of S2 bands by dividing by 10000 
+S2_cloudmasked <- S2_cloudmasked/10000
+
 
 #crop to study area
 S2_AOI <- crop(S2_cloudmasked, study_area)
@@ -430,9 +436,6 @@ forest_poly <- readOGR(paste0(getwd(), "/Data/shapefiles/forestmask_poly.shp"))
 
 S2_forestmask <- mask(S2_AOI, forest_poly)
 
-##Sentinel level 2A products provide BOA reflectance multiplied by 10000
-## Convert to refelectance values of S2 bands by dividing by 10000 
-S2_forestmask1<-S2_forestmask/10000
 plotRGB(S2_forestmask1, stretch="lin")
 plot(tree_sf, add=T)
 
@@ -442,14 +445,15 @@ plot(tree_sf, add=T)
 ### Classification 
 
 #Do a first unsupervised classification to get an feeling for the spatial distribution
-```{r}
-uc <- unsuperClass(S2_forestmask1, nClasses = 5)
+```{r} 
+S2 <-  S2_AOI   #S2_forestmask   ##or choose only area masked as forest
+uc <- unsuperClass(S2, nClasses = 5)
 ggR(uc$map, forceCat=T, geom_raster=T)
 ```
 
 #extract environmental information from obs. location
 ```{r}
-env <- raster::extract(S2_forestmask1, tree_sp, fun=mean, sp=F)
+env <- raster::extract(S2, tree_sp, fun=mean, sp=F)
 
 tree_env              <- data.frame(env)
 tree_env$NMDS1        <- tree_sp$NMDS1                       
@@ -488,7 +492,7 @@ cor_bands2 <- cor_NMDS2_0.3$S2
 ```
 
 
-### Regression 
+### Regression of NMDS1, NMDS2, tree species richness with different model settings using random forest
 
 ```{r}
 ##create training data
@@ -499,7 +503,7 @@ cor_bands2 <- cor_NMDS2_0.3$S2
 #no training data needed, as trainControl splits data automatically in test and train! 
 
 # A grid can be generated to specify candidate hyper-parameter values for inclusion into the models training
-rf.grid <- expand.grid(mtry=1:24) # number of variables available for splitting at each tree node
+rf.grid <- expand.grid(mtry=1:24) # number of variables available for splitting at each tree node, can be adjusted to improve model
 
 # Set up a resampling method in the model training process
 tc <- trainControl(method = "repeatedcv", # repeated cross-validation of the training data
@@ -509,7 +513,7 @@ tc <- trainControl(method = "repeatedcv", # repeated cross-validation of the tra
                    verboseIter = TRUE, #print training log
                    p=0.7) # the training percentage
 
-#####  NMDS.1
+#####  NMDS 1
 
 #train random forest model 
 set.seed(1) #make it reproducible
@@ -526,37 +530,42 @@ rf_model$bestTune
 #plot(predict_test, test$NMDS1)
 
 # Apply the random forest model to the Sentinel-2 data
-rf_prediction = raster::predict(stack(S2_AOI), model=rf_model)
+rf_prediction = raster::predict(stack(S2), model=rf_model)
 plot(rf_prediction)
+
+
+#####  NMDS 1 Model with only the bands where correlation R >0.3
+
+#train random forest model 
+rf.grid <- expand.grid(mtry=1:15) # number of variables available for splitting at each tree node, can be adjusted to improve model
+set.seed(1) #make it reproducible
+rf_model1 <- caret::train(x = tree_env[,cor_bands1], y =tree_env$NMDS1,
+                    method = "rf", metric="Rsquared", trainControl = tc, 
+                    tuneGrid = rf.grid)
+
+rf_model1$results
+max(rf_model1$results$Rsquared)
+rf_model1$bestTune
+
+# Get the predictions of your model in the test set; already done in the train function!
+#predict_test = predict(rf_model, newdata = test)
+#plot(predict_test, test$NMDS1)
+
+# Apply the random forest model to the Sentinel-2 data
+rf_prediction1 = raster::predict(stack(S2), model=rf_model1)
+plot(rf_prediction)
+
+
+
+
 
 
 #####  NMDS.2
 
 #train random forest model 
-set.seed(2) #make it reproducible
-rf_model2 <- caret::train(x = tree_env[,names(tree_env)!=c("NMDS1","NMDS2","n_species")], y =tree_env$NMDS2,
-                    method = "rf", metric="Rsquared", trainControl = tc, 
-                    tuneGrid = rf.grid)
-
-rf_model$results
-max(rf_model2$results$Rsquared)
-rf_model2$bestTune
-
-# Get the predictions of your model in the test set
-#predict_test = predict(rf_model, newdata = test)
-#plot(predict_test, test$NMDS1)
-
-# Apply the random forest model to the Sentinel-2 data
-rf_prediction2 = raster::predict(stack(S2_AOI), model=rf_model2)
-plot(rf_prediction2)
-
-
-#####  n species
-
-##Not including NMDS
-#train random forest model   
-set.seed(3) #make it reproducible
-rf_model3 <- caret::train(x = tree_env[,names(tree_env)!=c("n_species","NMDS1", "NMDS2")], y =tree_env$n_species,
+rf.grid <- expand.grid(mtry=1:15) # number of variables available for splitting at each tree node, can be adjusted to improve model
+set.seed(1) #make it reproducible
+rf_model3 <- caret::train(x = tree_env[,names(tree_env)!=c("NMDS1","NMDS2","n_species")], y =tree_env$NMDS2,
                     method = "rf", metric="Rsquared", trainControl = tc, 
                     tuneGrid = rf.grid)
 
@@ -569,14 +578,17 @@ rf_model3$bestTune
 #plot(predict_test, test$NMDS1)
 
 # Apply the random forest model to the Sentinel-2 data
-rf_prediction3 = raster::predict(stack(S2_AOI), model=rf_model3)
-plot(rf_prediction3) 
+rf_prediction2 = raster::predict(stack(S2), model=rf_model2)
+plot(rf_prediction2)
 
 
-##Including NMDS 
+#####  n species
+
+##Not including NMDS
 #train random forest model 
-set.seed(4) #make it reproducible
-rf_model4 <- caret::train(x = tree_env[,names(tree_env)!=c("n_species", "NMDS2")], y =tree_env$n_species,
+rf.grid <- expand.grid(mtry=1:23) # number of variables available for splitting at each tree node, can be adjusted to improve model
+set.seed(1) #make it reproducible
+rf_model4 <- caret::train(x = tree_env[,names(tree_env)!=c("n_species","NMDS1", "NMDS2")], y =tree_env$n_species,
                     method = "rf", metric="Rsquared", trainControl = tc, 
                     tuneGrid = rf.grid)
 
@@ -589,12 +601,32 @@ rf_model4$bestTune
 #plot(predict_test, test$NMDS1)
 
 # Apply the random forest model to the Sentinel-2 data
-rf_prediction4= raster::predict(stack(S2_AOI), model=rf_model4)
+rf_prediction4 = raster::predict(stack(S2), model=rf_model4)
 plot(rf_prediction4) 
 
-```
 
-The three parameters (NMDS1, NMDS2 and number of tree species) are predicted based on multi-temporal S2 imagery using Random forest. The results differ highly in model accuracy (NMDS1 R2= 0.84, NMDS2 R2 =0.21, n species R2 = 0.89  including NMDS1+2, n species R2 = 0.89  only S2 bands). Species richness has shown to be highly negatively correlated to NMDS1(R=-0.92), whereas there is no correlation to NMDS2 (0.07). 
+##Including NMDS 
+#train random forest model 
+rf.grid <- expand.grid(mtry=1:24)
+set.seed(1) #make it reproducible
+rf_model5 <- caret::train(x = tree_env[,names(tree_env)!=c("n_species", "NMDS2")], y =tree_env$n_species,
+                    method = "rf", metric="Rsquared", trainControl = tc, 
+                    tuneGrid = rf.grid)
+
+rf_model5$results
+max(rf_model5$results$Rsquared)
+rf_model5$bestTune
+
+# Get the predictions of your model in the test set
+#predict_test = predict(rf_model, newdata = test)
+#plot(predict_test, test$NMDS1)
+
+# Apply the random forest model to the Sentinel-2 data
+rf_prediction5= raster::predict(stack(S2), model=rf_model5)
+plot(rf_prediction5) 
+
+```
+The three parameters (NMDS1, NMDS2 and number of tree species) are predicted based on multi-temporal S2 imagery using Random forest. The results differ highly in model accuracy (NMDS1 R2= 0.84, NMDS2 R2 =0.21, n species R2 = 0.89  including NMDS1+2, n species R2 = 0.89  only S2 bands). Species richness has shown to be highly negatively correlated to NMDS1(R=-0.92), whereas there is no correlation to NMDS2 (0.07).Even though the NMDS1 is highly correlated, the model predicting species richness which is not including NMDS1/2 performs better than the one including NMDS1. 
 
 
 
