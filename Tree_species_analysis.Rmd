@@ -1,0 +1,603 @@
+
+
+###########################################################################################################################################################################################################################################################################################################################################################################################################
+# Title          : Analyse Tree species composition with time-series multispectral data  
+#
+# Purpose        : This Script is written as a final project for the Programming and Geostatistical Analysis course (Eagle master    programm, teacher Martin Wegmann)
+#                
+# Author         : Nora Nieskens 
+#
+# Data           : Field data: Vascular plant species identity and their cover on each plot for Steigerwald and Uniforest (Source: )
+Landcover raster based on Sentinel2 from 2016 (Source: mundialis GmbH & Co. KG)
+#                 
+# Satellite data : Sentinel 2 data 2017: multi-temporal composite (will be generated in the script)
+# Output         : Spatial predicition of community composition (NDMS1, NDMS2)
+#
+# Reference		   : 
+##############################################################################################################################################################################################################################################################################################################
+
+### Install + load packages 
+```{r}
+
+#function to check for installed packages, if not install
+install <- function(packages){
+  new.packages <- packages[!(packages %in% installed.packages()[, "Package"])]
+  if (length(new.packages)) 
+    install.packages(new.packages, dependencies = TRUE)
+  sapply(packages, require, character.only = TRUE)
+}
+ 
+# apply function
+packages <- c("readr","ggmap","rgdal","rgeo5s","vegan","sf","sen2r","raster","magrittr","leaflet","IRdisplay","getPass","plotly", "xfun", "glacierSMBM", "dplyr", "htmlwidgets", "sp", "RStoolbox", "dplyr", "pacman", "randomForest", "caret")
+install(packages)
+
+pacman::p_load(readr,ggmap,rgdal,rgeos,vegan,sf,sen2r,raster,magrittr,leaflet,IRdisplay,getPass,plotly, xfun,glacierSMBM, dplyr,htmlwidgets,sp,RStoolbox,dplyr,pacman, randomForest,caret)
+
+```
+
+### Set working direction for all chunks
+
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = choose.dir(caption = "Select working directory adapted to your computer"))
+#In my case "D:/eagle/Lecture-Programming/hyperspectral_project"
+```
+
+### Import Ground truth csv data 
+
+```{r}
+
+#Steigerwald: Percentage of each tree species per plot 
+STE_tree_df <- read.csv(paste0(getwd(),"/Data/Plot and tree species data for Steigerwald and Uniforest/STE_Tree_excl_herb_sum_Percent.csv"))
+
+#Steigerwald: Coordinates of plot centre
+# EPSP 32632
+STE_coord <- read.csv(getwd(),"/Data/Plot and tree species data for Steigerwald and Uniforest/STE_Coordinate.csv")
+
+#Uniforest: Percentage of each tree species per plot 
+Unifo_tree_df <- read.csv(getwd(),"/Data/Plot and tree species data for Steigerwald and Uniforest/UniForest_Tree_Composition.csv")
+
+#Steigerwald: Coordinates of plot centre
+# EPSG 4326
+Unifo_coord <- read_delim(getwd(),"/Data/Plot and tree species data for Steigerwald and Uniforest/UniForest_Koordinaten.csv", 
+    ";", escape_double = FALSE, trim_ws = TRUE)
+
+```
+
+### Preprocess ground truth data
+
+#Match tree species name
+
+```{r}
+
+#show naming in both dataframes --> it is different!
+colnames(STE_tree_df)
+colnames(Unifo_tree_df)
+
+#match double entries in Unifo_tree_df
+Unifo_tree_df$betula.pendula <- Unifo_tree_df$betula_pendula + Unifo_tree_df$Betula_pendula
+Unifo_tree_df <- Unifo_tree_df[,3:ncol(Unifo_tree_df)]
+
+#decapitalise all names 
+colnames(STE_tree_df) <- tolower(colnames(STE_tree_df))
+colnames(Unifo_tree_df) <- tolower(colnames(Unifo_tree_df))
+
+#exchange _ to . in Unifo
+colnames(Unifo_tree_df) <- gsub('_', '.', colnames(Unifo_tree_df), fixed=TRUE)
+
+```
+
+
+# bind each df to its coordinate file
+
+```{r}
+####Steigerwald
+colnames(STE_tree_df)[1] <- "ID"
+colnames(STE_coord)[1] <- "ID"
+STE_df <- merge(STE_coord, STE_tree_df, by="ID")
+
+
+####Uniforest
+Unifo_tree_df$PlotD <- Unifo_coord$PlotD[1:75]
+Unifo_df <- merge(Unifo_coord[,c("PlotD", "xcoord","ycoord")], Unifo_tree_df, by="PlotD")
+colnames(Unifo_df)[1] <- "ID"
+
+# correction of coordinates so they can be recognized in R
+Unifo_df$xcoord <- ifelse(Unifo_df$xcoord < 1042898424, Unifo_df$xcoord/10000000, Unifo_df$xcoord/100000000)
+Unifo_df$ycoord <- ifelse(Unifo_df$ycoord <= 500704274, Unifo_df$ycoord/10000000, Unifo_df$ycoord/100000000)
+
+```
+
+
+#Reproject uniforest data from WGS84 to UTM 32N
+
+```{r}
+
+### Uniforest
+
+# from dataframe to spatial dataframe
+Unifo_sdf <- Unifo_df
+coordinates(Unifo_sdf) <- ~xcoord+ycoord
+proj4string(Unifo_sdf) <- CRS("+init=epsg:4326")
+
+#reproject to EPSG 32632 
+Unifo_sdf_UTM <- spTransform(Unifo_sdf, "+init=epsg:32632")
+
+#safe as sf
+Unifo_sf <- st_as_sf(Unifo_df, coords=c("xcoord","ycoord"), 
+                     crs="+init=epsg:4326")
+Unifo_sf<- st_transform(Unifo_sf,"+init=epsg:32632")
+
+Unifo_df_utm <- as.data.frame(Unifo_sf)
+
+Unifo_df_utm[c("X","Y")] <- st_coordinates(Unifo_sf)
+Unifo_df_utm <- Unifo_df_utm[,names(Unifo_df_utm) != "geometry"]
+
+```
+
+
+#merge both dataframes together with new column "habitat": STE or Uni
+
+```{r}
+
+`%!in%` <- Negate(`%in%`)
+Unifo_col <- colnames(Unifo_df_utm)[colnames(Unifo_df_utm) %!in% colnames(STE_df)]
+STE_col <- colnames(STE_df)[colnames(STE_df) %!in% colnames(Unifo_df_utm)]
+
+Unifo_df_utm[STE_col] <- 0
+Unifo_df_utm$habitat <- "Uniforest"
+
+STE_df[Unifo_col] <- 0
+STE_df$habitat <- "Steigerwald"
+
+tree_spec <- rbind(Unifo_df_utm, STE_df)
+colnames(tree_spec)
+
+```
+
+
+# calculate non-metric multidimensional scaling (NMDS): Bray-Curtis distance metrics
+# "NMDS maps the position of sites in species space [...] onto a predefined small number of axes in an iterative search for an optimal solution." (Leutner et al. 2012)
+
+
+```{r}
+tree_NMDS <-  metaMDS(tree_spec[,!names(tree_spec) %in% c("ID", "X","Y","habitat")],distance = "bray", k=2)
+tree_NMDS$stress
+stressplot(tree_NMDS)
+
+#add NDMS1, NDMS2 info to dataframe
+datascores <- as.data.frame(scores(tree_NMDS))
+tree_spec <- cbind(tree_spec,datascores)
+
+#add a new column with number of species
+tree_spec$n_species <- rowSums(tree_spec[,!names(tree_spec) %in% c("ID", "X","Y","habitat","NMDS1","NMDS2")] > 0)
+
+```
+
+# Graphic: NMDS
+#compare both study sites
+
+```{r}
+
+#NMDS in both habitats
+NMDS_plot <- ggplot(tree_spec, aes(x = NMDS1, y = NMDS2)) + 
+    geom_point(aes(size = n_species, colour = habitat))+ 
+    theme(axis.text.y = element_text(colour = "black", size = 12, face = "bold"), 
+    axis.text.x = element_text(colour = "black", face = "bold", size = 12), 
+    legend.text = element_text(size = 12, face ="bold", colour ="black"), 
+    legend.position = "right", axis.title.y = element_text(face = "bold", size = 14), 
+    axis.title.x = element_text(face = "bold", size = 14, colour = "black"), 
+    legend.title = element_text(size = 14, colour = "black", face = "bold"), 
+    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1.2),
+    legend.key=element_blank()) + 
+    labs(x = "NMDS1", colour = "Habitat", y = "NMDS2", size = "#Species")  + 
+    scale_colour_manual(values = c("#009E73", "#E69F00")) 
+NMDS_plot
+
+plot(tree_spec$n_species)
+
+#visualize distribution of number of species per plot
+ggplot(tree_spec, aes(x=as.factor(n_species), fill=habitat )) +
+  geom_bar()+
+  theme(axis.text.y = element_text(colour = "black", size = 12, face = "bold"), 
+    axis.text.x = element_text(colour = "black", face = "bold", size = 12), 
+    legend.text = element_text(size = 12, face ="bold", colour ="black"), 
+    legend.position = "right", axis.title.y = element_text(face = "bold", size = 14), 
+    axis.title.x = element_text(face = "bold", size = 14, colour = "black"), 
+    legend.title = element_text(size = 14, colour = "black", face = "bold"), 
+    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1.2),
+    legend.key=element_blank()) + 
+    labs(x = "Number of species", fill = "Habitat", y = "Number of plots")  + 
+    scale_colour_manual(values = c("#009E73", "#E69F00")) 
+
+```
+
+# Get the dataframes spatial
+
+```{r}
+tree_sdf <- tree_spec
+coordinates(tree_sdf) <- ~X+Y
+proj4string(tree_sdf) <- CRS("+init=epsg:32632")
+
+#safe as sf
+tree_sf <- st_as_sf(tree_spec, coords=c("X", "Y"),crs="+init=epsg:32632")
+
+#export point shapefile
+writeOGR(as(tree_sf,"Spatial"), getwd(), "/Data/shapefiles/tree_points.shp", driver="ESRI Shapefile")
+
+```
+
+# Make buffer according to plot size
+
+```{r}
+# 2 different plot sizes in Steigerwald and Uniforest
+
+# STE mean plot size is 200m² square, thus r=8m
+sp <- as(tree_sf,"Spatial")
+tree_buff <- gBuffer(sp[sp$habitat=="Steigerwald",], byid = TRUE, width=8)
+
+# Uniforest, the mean plot size is 2500m², thus r=28m
+tree_buff_Uni <- gBuffer(sp[sp$habitat=="Uniforest",], byid = TRUE, width=28)
+
+#merge both spatialpolygondataframes back together
+tree_sp<- rbind(tree_buff,tree_buff_Uni)
+writeOGR(tree_sp, paste0(getwd(),"/Data/shapefiles/tree_plots.shp"), driver ="ESRI Shapefile", "data", overwrite_layer=T)
+
+```
+
+# Graphic: Study area
+
+```{r}
+
+study_area <- readOGR(paste0(getwd(), "/Data/shapefiles/tree_study_AOI.shp"))
+
+#interactive map view; only in EPSG4326 possible
+leaflet(sizingPolicy(defaultHeight=100, viewer.suppress=T, knitr.figure=F,)) %>% 
+  addProviderTiles(providers$Esri.NatGeoWorldMap) %>% 
+  addPolygons(data=spTransform(tree_sp, CRS("+proj=longlat +datum=WGS84")), stroke=T) %>% 
+  addPolygons(data=spTransform(study_area, CRS("+proj=longlat +datum=WGS84")), stroke=T)
+
+```
+
+
+
+### Sentinel 2 imagery
+
+
+#Ordering S2 images 
+#tiles UNA and UPA from the Long Time Data archive 
+
+#############################CAUTION###############
+#this ordering process needs time (for me some days in total); for fast processing skip this chunk and use the provided S2 data 
+```{r}
+# Create folder where images are saved
+path_autosave <- paste0(getwd(), "/Data/UNA")
+dir.create(path_autosave)
+path_autosave2 <- paste0(getwd(), "/Data/UPA")
+dir.create(path_autosave)
+
+# Log in on Copernicus Open Acces Hub
+write_scihub_login(readline(prompt = "Please enter the username: "), password= getPass::getPass())
+
+# Time window
+#choosen month are 4,5,7,8
+time_window <- as.Date(c("2017-04-01", "2017-08-31"))
+ 
+# Tile code
+tile <- c("32UNA","32UPA")
+
+# Max % of clouds
+max_cloud <- 15
+
+list_available <- s2_list(tile= tile[1], time_interval= time_window, max_cloud= max_cloud, orbit="108")
+list_available2<- s2_list(tile= tile[2], time_interval= time_window, max_cloud= max_cloud, orbit="108")
+
+?s2_list
+# Show metadata
+safe_getMetadata(list_available, "sensing_datetime")
+safe_getMetadata(list_available2, "sensing_datetime")
+
+# Subset of images
+list_safe <- c(list_available[c(2,4,5)])
+safe_getMetadata(list_safe2, "sensing_datetime")
+
+list_safe2 <- c(list_available2[c(2,4,5)])
+safe_getMetadata(list_safe2, "sensing_datetime")
+
+## Convert from other classes
+list_safe <- as(list_safe, "safelist")
+list_safe2 <-  as(list_safe2, "safelist")
+
+# Download list of images
+s2_download(list_safe, outdir= paste0(path_autosave,"/UNA"), order_lta=T)
+
+#check if is online; you have to wait till it is available 
+safe_is_online("C:/Users/noran/OneDrive/DOKUME~1/SEN2R~1/lta_orders/lta_20210409_141625.json")
+s2_order("C:/Users/noran/OneDrive/DOKUME~1/SEN2R~1/lta_orders/lta_20210409_141625.json", service="dhus")
+
+s2_download(list_safe2, outdir= paste0(path_autosave,"/UPA"), order_lta=T )
+s2_order("C:/Users/noran/OneDrive/DOKUME~1/SEN2R~1/lta_orders/lta_20210409_211254.json", service="dhus")
+safe_is_online("C:/Users/noran/OneDrive/DOKUME~1/SEN2R~1/lta_orders/lta_20210409_141625.json")
+
+```
+
+######################################
+
+### Preprocessing of Sentinel 2 data
+```{r}
+remotes::install_github("spatialstatisticsupna/RGISTools")
+library(RGISTools)
+
+#unzip files
+unzip_dir=paste0(getwd(), "/Data/S2_tiles/unzip")
+zip <- list.files(path= paste0(getwd(), "/Data/S2_tiles/UNA"), pattern=".zip", full.names = T)
+sapply(zip, unzip, exdir = unzip_dir)
+
+zip2 <- list.files(path= paste0(getwd(), "/Data/S2_tiles/UPA"), pattern=".zip", full.names = T)
+sapply(zip2, unzip, exdir = unzip_dir)
+```
+
+
+#process L1C to L2A
+##################################CAUTION############################################################
+##process takes several minutes to process!
+##each of the two L1C images about 40 min 
+### Alternativley, the processed files are provided in unzip_dir
+
+```{r}
+# L1C to L2A
+install_sen2cor(sen2cor_dir = NA, version = "2.5.5", force = FALSE)
+link_sen2cor(sen2cor_dir)
+
+sen2cor(l1c_prodlist = paste0(unzip_dir,"/S2B_MSIL1C_20170823T103019_N0205_R108_T32UNA_20170823T103018.SAFE"))
+sen2cor(l1c_prodlist = paste0(unzip_dir,"/S2B_MSIL1C_20170823T103019_N0205_R108_T32UPA_20170823T103018.SAFE"))
+
+
+```
+#######################################################################################################
+
+
+#merge both tiles for each date
+
+```{r}
+senMosaic(unzip_dir,
+          AppRoot = paste0(getwd(), "/Data/S2_tiles/"),
+          gutils = TRUE,
+          out.name = "Sentinel2_mosaic")
+```
+
+#Create and apply cloud mask on each image 
+
+```{r}
+# create cloud mask
+mosaic_dir= paste0(getwd(),"/Data/S2_tiles/Sentinel2_mosaic")
+senCloudMask(src=mosaic_dir, AppRoot = paste0(getwd(), "/Data/S2_tiles"),outname="CloudMask")
+
+#get directories of 20m cloudmasks, import them
+cloud_mask <- list.files(paste0(getwd(),"/Data/S2_tiles/CloudMask"), full.names = TRUE,recursive=TRUE,
+pattern = "\\.tif$")
+cloudmask_20m <- cloud_mask[grepl("20m",cloud_mask)]
+cloudmask_20m <- lapply(1:length(cloudmask_20m), function (x) {raster(cloudmask_20m[x])})
+
+#get directories of 20m S2 imagery, import them
+
+#tiles <- list.files(mosaic_dir, full.names = TRUE,recursive=TRUE,
+#pattern = "\\.tif$")
+#tiles_20m <- tiles[grepl("20m",tiles)]
+
+S2_20m <- list.files(path=mosaic_dir, recursive=T, full.names=T, pattern =
+                           "B0?(2|3|4|5|6|8A|11|12)_20m.tif$")
+S2_20m <- lapply(1:length(S2_20m), function (x) {raster(S2_20m[x])})
+
+S2_cloudmask_2017235 <- raster::mask(stack(S2_20m[grepl("2017235",S2_20m)]), mask= cloudmask_20m[grepl("2017235",cloudmask_20m)])
+S2_cloudmask_2017200 <- raster::mask(stack(S2_20m[grepl("2017200",S2_20m)]), mask= cloudmask_20m[[grepl("2017200",cloudmask_20m)]])
+S2_cloudmask_2017130 <- raster::mask(stack(S2_20m[grepl("2017130",S2_20m)]), mask= cloudmask_20m[[grepl("2017130",cloudmask_20m)]])
+
+
+#investigate cloud masked images
+plotRGB(S2_cloudmask_2017235, stretch="lin")
+plotRGB(S2_cloudmask_2017200, stretch="lin")
+plotRGB(S2_cloudmask_2017130, stretch="lin")
+#there seems to be some problems with the cloudmasking: works well for 2017235, 2017200 but not 2017130
+
+#stack the masked images together 
+S2_cloudmasked <- stack(S2_cloudmask_2017235,S2_cloudmask_2017200,S2_cloudmask_2017130)
+
+
+#crop to study area
+S2_AOI <- crop(S2_cloudmasked, study_area)
+class(S2_AOI)
+
+```
+
+
+#optional forest mask 
+### Clip Sentinel data to the forest area + 100m buffer
+
+```{r}
+#import Landcover data from 2016, was resampled to 20m 
+LC <- raster(paste0(getwd(),"/LC_20m.tif"))
+LC <- crop(LC, extent(S2_AOI))
+
+#assign all other values than forest to NA
+LC_forest <- calc(LC, fun=function(x){ x[x != 10] <- NA; return(x)})
+writeRaster(LC_forest, paste0(getwd(),"/Data/LC_forest_raster20m.tif"), overwrite=T)
+
+##polygonizing in R takes to much time (memory can not be allocated), thus file is exported and polygonized+dissolved in QGIS
+#forest_poly <- rasterToPolygons(LC_forest, fun=NULL, dissolve=TRUE)
+
+#import forest mask as polygon
+forest_poly <- readOGR(paste0(getwd(), "/Data/shapefiles/forestmask_poly.shp"))
+
+S2_forestmask <- mask(S2_AOI, forest_poly)
+
+##Sentinel level 2A products provide BOA reflectance multiplied by 10000
+## Convert to refelectance values of S2 bands by dividing by 10000 
+S2_forestmask1<-S2_forestmask/10000
+plotRGB(S2_forestmask1, stretch="lin")
+plot(tree_sf, add=T)
+
+```
+
+
+### Classification 
+
+#Do a first unsupervised classification to get an feeling for the spatial distribution
+```{r}
+uc <- unsuperClass(S2_forestmask1, nClasses = 5)
+ggR(uc$map, forceCat=T, geom_raster=T)
+```
+
+#extract environmental information from obs. location
+```{r}
+env <- raster::extract(S2_forestmask1, tree_sp, fun=mean, sp=F)
+
+tree_env              <- data.frame(env)
+tree_env$NMDS1        <- tree_sp$NMDS1                       
+tree_env$NMDS2        <- tree_sp$NMDS2
+```
+
+#investigate how bands correlate with NMDS1, NMDS2, n_species
+```{r}
+tree_env$n_species    <- tree_sp$n_species
+
+boxplot(subset(data.frame(tree_env), NMDS1<=0, select =c(1:24)))
+boxplot(subset(data.frame(tree_env), NMDS1>0, select =c(1:24)))
+
+boxplot(subset(data.frame(tree_env), NMDS2<=0, select =c(1:24)))
+boxplot(subset(data.frame(tree_env), NMDS2>0, select =c(1:24)))
+
+#calculate correlation of NMDS1/NMDS2 to each Sentinel band 
+cor_NMDS1 <- as.data.frame(cor(tree_env[,1:24],tree_env$NMDS1))
+cor_NMDS2 <- as.data.frame(cor(tree_env[,1:24],tree_env$NMDS2))
+
+cor_NMDS1 <- tibble::rownames_to_column(cor_NMDS1, "S2")
+cor_NMDS2 <- tibble::rownames_to_column(cor_NMDS2, "S2")
+
+cor_nspecies <- as.data.frame(cor(tree_env[,1:24],tree_env$n_species))
+cor_nspecies <- tibble::rownames_to_column(cor_nspecies, "S2")
+cor(tree_env$NMDS1, tree_env$n_species)
+cor(tree_env$NMDS2, tree_env$n_species)
+
+
+cor_NMDS1_0.3 <- cor_NMDS1[cor_NMDS1$V1> 0.3 | cor_NMDS1$V1< (-0.3) ,]
+cor_NMDS2_0.3 <- cor_NMDS2[cor_NMDS2$V1> 0.3 | cor_NMDS2$V2< (-0.3) ,]
+
+cor_bands1 <- cor_NMDS1_0.3$S2
+cor_bands2 <- cor_NMDS2_0.3$S2
+
+```
+
+
+### Regression 
+
+```{r}
+##create training data
+#inTraining <- createDataPartition(tree_env$NMDS1, p = .75, list = FALSE)
+#train <- tree_env[inTraining,]
+#test <- tree_env[-inTraining,]
+
+#no training data needed, as trainControl splits data automatically in test and train! 
+
+# A grid can be generated to specify candidate hyper-parameter values for inclusion into the models training
+rf.grid <- expand.grid(mtry=1:24) # number of variables available for splitting at each tree node
+
+# Set up a resampling method in the model training process
+tc <- trainControl(method = "repeatedcv", # repeated cross-validation of the training data
+                   number = 10, # number of folds
+                   repeats = 5, # number of repeats
+                   allowParallel = TRUE, # allow use of multiple cores if specified in training
+                   verboseIter = TRUE, #print training log
+                   p=0.7) # the training percentage
+
+#####  NMDS.1
+
+#train random forest model 
+set.seed(1) #make it reproducible
+rf_model <- caret::train(x = tree_env[,names(tree_env)!=c("NMDS1","NMDS2","n_species")], y =tree_env$NMDS1,
+                    method = "rf", metric="Rsquared", trainControl = tc, 
+                    tuneGrid = rf.grid)
+
+rf_model$results
+max(rf_model$results$Rsquared)
+rf_model$bestTune
+
+# Get the predictions of your model in the test set; already done in the train function!
+#predict_test = predict(rf_model, newdata = test)
+#plot(predict_test, test$NMDS1)
+
+# Apply the random forest model to the Sentinel-2 data
+rf_prediction = raster::predict(stack(S2_AOI), model=rf_model)
+plot(rf_prediction)
+
+
+#####  NMDS.2
+
+#train random forest model 
+set.seed(2) #make it reproducible
+rf_model2 <- caret::train(x = tree_env[,names(tree_env)!=c("NMDS1","NMDS2","n_species")], y =tree_env$NMDS2,
+                    method = "rf", metric="Rsquared", trainControl = tc, 
+                    tuneGrid = rf.grid)
+
+rf_model$results
+max(rf_model2$results$Rsquared)
+rf_model2$bestTune
+
+# Get the predictions of your model in the test set
+#predict_test = predict(rf_model, newdata = test)
+#plot(predict_test, test$NMDS1)
+
+# Apply the random forest model to the Sentinel-2 data
+rf_prediction2 = raster::predict(stack(S2_AOI), model=rf_model2)
+plot(rf_prediction2)
+
+
+#####  n species
+
+##Not including NMDS
+#train random forest model   
+set.seed(3) #make it reproducible
+rf_model3 <- caret::train(x = tree_env[,names(tree_env)!=c("n_species","NMDS1", "NMDS2")], y =tree_env$n_species,
+                    method = "rf", metric="Rsquared", trainControl = tc, 
+                    tuneGrid = rf.grid)
+
+rf_model3$results
+max(rf_model3$results$Rsquared)
+rf_model3$bestTune
+
+# Get the predictions of your model in the test set
+#predict_test = predict(rf_model, newdata = test)
+#plot(predict_test, test$NMDS1)
+
+# Apply the random forest model to the Sentinel-2 data
+rf_prediction3 = raster::predict(stack(S2_AOI), model=rf_model3)
+plot(rf_prediction3) 
+
+
+##Including NMDS 
+#train random forest model 
+set.seed(4) #make it reproducible
+rf_model4 <- caret::train(x = tree_env[,names(tree_env)!=c("n_species", "NMDS2")], y =tree_env$n_species,
+                    method = "rf", metric="Rsquared", trainControl = tc, 
+                    tuneGrid = rf.grid)
+
+rf_model4$results
+max(rf_model4$results$Rsquared)
+rf_model4$bestTune
+
+# Get the predictions of your model in the test set
+#predict_test = predict(rf_model, newdata = test)
+#plot(predict_test, test$NMDS1)
+
+# Apply the random forest model to the Sentinel-2 data
+rf_prediction4= raster::predict(stack(S2_AOI), model=rf_model4)
+plot(rf_prediction4) 
+
+```
+
+The three parameters (NMDS1, NMDS2 and number of tree species) are predicted based on multi-temporal S2 imagery using Random forest. The results differ highly in model accuracy (NMDS1 R2= 0.84, NMDS2 R2 =0.21, n species R2 = 0.89  including NMDS1+2, n species R2 = 0.89  only S2 bands). Species richness has shown to be highly negatively correlated to NMDS1(R=-0.92), whereas there is no correlation to NMDS2 (0.07). 
+
+
+
+
+
+
