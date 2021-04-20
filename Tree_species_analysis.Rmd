@@ -8,9 +8,10 @@
 #                
 # Author         : Nora Nieskens 
 #
-# Field data:      Vascular plant species identity and their cover on each plot for Steigerwald (2014) and Uniforest                      (2017) (Source: )
+# Field data:      Vascular plant species identity and their cover on each plot for Steigerwald (2014) and Uniforest                      (2017) (Source: unpublished data provided by Jörg Müller (joerg.mueller@npv-bw.bayern.de))
 #                 
-# Satellite data : Sentinel 2 data: multi-temporal composite (will be generated in the script) of 10.05.2017,19.07.2017 and 23.08.2017; Landcover raster based on Sentinel2 from 2016 (Source: mundialis GmbH & Co. KG)
+# Satellite data : Sentinel 2 data: multi-temporal composite (will be generated in the script) of 10.05.2017,19.07.2017 and 23.08.2017 (Copernicus Sentinel data. Retrieved from Sentinel hub [10.04.2021], processed by ESA.); Landcover raster based on Sentinel2 from 2016 (Source: mundialis GmbH & Co. KG)
+
 # Output         : Spatial predicition of community composition (NDMS1, NDMS2)
 
 ##############################################################################################################################################################################################################################################################################################################
@@ -38,7 +39,7 @@ pacman::p_load(readr,ggmap,rgdal,rgeos,vegan,sf,sen2r,raster,magrittr,leaflet,IR
 
 ```{r, setup, include=FALSE}
 knitr::opts_knit$set(root.dir = choose.dir(caption = "Select working directory adapted to your computer"))
-#In my case "D:/eagle/Lecture-Programming/hyperspectral_project"
+
 ```
 
 ### Import Ground truth csv data 
